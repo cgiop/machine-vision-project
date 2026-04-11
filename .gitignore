@@ -34,7 +34,7 @@ myenv/
 AtoZ_3.1/
 kinivi_temp/
 Sign-Language-To-Text-and-Speech-Conversion/
-
+Sign-Language-To-Text-and-Speech-Conversion
 # ── Jupyter Notebooks checkpoints ────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb
