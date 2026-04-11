@@ -30,10 +30,10 @@ myenv/
 # Models are tracked. If they get too large, migrate to Git LFS:
 #   git lfs track "*.h5" "*.tflite" "*.task"
 
-# ── Training datasets ─────────────────────────────────────────────────────────
+# ── Training datasets & reference repos (not needed at runtime) ───────────────
 AtoZ_3.1/
 kinivi_temp/
-Sign-Language-To-Text-and-Speech-Conversion/myenv/
+Sign-Language-To-Text-and-Speech-Conversion/
 
 # ── Jupyter Notebooks checkpoints ────────────────────────────────────────────
 .ipynb_checkpoints/
