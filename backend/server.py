@@ -28,7 +28,7 @@ log = logging.getLogger("asl")
 
 BASE     = os.path.dirname(__file__)
 CNN_H5   = os.path.join(BASE, "cnn8grps_rad1_model.h5")
-LSTM_H5  = os.path.join(BASE, "..", "action.h5")
+LSTM_H5  = os.path.join(BASE, "action.h5")
 TFLITE   = os.path.join(BASE, "kinivi_model", "keypoint_classifier", "keypoint_classifier.tflite")
 KLABELS  = os.path.join(BASE, "kinivi_model", "keypoint_classifier", "keypoint_classifier_label.csv")
 
