@@ -1,0 +1,14 @@
+# Web Server
+fastapi==0.110.0
+uvicorn==0.27.1
+websockets==12.0
+
+# Machine Learning & Computer Vision
+numpy==1.26.4
+opencv-python==4.9.0.80
+tensorflow==2.16.1
+mediapipe==0.10.11
+cvzone==1.6.1
+
+# Utilities
+pydantic==2.6.4
