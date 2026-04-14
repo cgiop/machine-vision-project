@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: asl-vision-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Optional: sync local backend code so you don't need to rebuild image for simple python changes
+      - ./backend:/app/backend
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: asl-vision-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      # Sync local frontend code for hot-reloading
+      - ./frontend:/app
+      # Do not override the node_modules folder inside the container with local path
+      - /app/node_modules
+    environment:
+      # Use polling for file changes for hot-reloading since we're using volumes on Docker
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    depends_on:
+      - backend
+    restart: always
