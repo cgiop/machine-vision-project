@@ -5,9 +5,16 @@ import './index.css';
 const WS_URL   = 'ws://localhost:8000/ws/feed';
 const API_URL  = 'http://localhost:8000';
 const HOLD_MAX = 15;
-const FRAME_MS = 120; // ~8fps to backend (CNN is slow)
+const FRAME_MS = 120;
 
-// ── Draw bounding box ─────────────────────────────────────────────────────────
+const TRANSLATE_LANGUAGES = [
+  { code: 'fr', label: 'French',  flag: '🇫🇷' },
+  { code: 'de', label: 'German',  flag: '🇩🇪' },
+  { code: 'es', label: 'Spanish', flag: '🇪🇸' },
+];
+
+const MYMEMORY_URL = "https://api.mymemory.translated.net/get";
+
 function drawBox(canvas, video, boxes, letter, conf) {
   if (!canvas || !video) return;
   const vw = video.videoWidth  || 640;
@@ -31,16 +38,21 @@ function drawBox(canvas, video, boxes, letter, conf) {
   });
 }
 
-// ════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [mode,      setMode]      = useState('alphabet');
-  const [letter,    setLetter]    = useState('');
-  const [conf,      setConf]      = useState(0);
-  const [sentence,  setSentence]  = useState('');
-  const [holdCount, setHoldCount] = useState(0);
-  const [backend,   setBackend]   = useState(false);
-  const [wsState,   setWsState]   = useState('connecting'); // connecting | open | closed
-  const [fps,       setFps]       = useState(0);
+  const [mode,        setMode]        = useState('alphabet');
+  const [letter,      setLetter]      = useState('');
+  const [conf,        setConf]        = useState(0);
+  const [sentence,    setSentence]    = useState('');
+  const [holdCount,   setHoldCount]   = useState(0);
+  const [backend,     setBackend]     = useState(false);
+  const [wsState,     setWsState]     = useState('connecting');
+  const [fps,         setFps]         = useState(0);
+
+  // Translation state
+  const [transLang,   setTransLang]   = useState('fr');
+  const [translated,  setTranslated]  = useState('');
+  const [translating, setTranslating] = useState(false);
+  const [transError,  setTransError]  = useState('');
 
   const webcamRef  = useRef(null);
   const canvasRef  = useRef(null);
@@ -48,13 +60,11 @@ export default function App() {
   const timerRef   = useRef(null);
   const fpsCount   = useRef(0);
 
-  // ── FPS counter ────────────────────────────────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => { setFps(fpsCount.current); fpsCount.current = 0; }, 1000);
     return () => clearInterval(id);
   }, []);
 
-  // ── Backend ping ───────────────────────────────────────────────────────────
   useEffect(() => {
     const check = () =>
       fetch(`${API_URL}/api/status`).then(r => setBackend(r.ok)).catch(() => setBackend(false));
@@ -63,7 +73,6 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // ── WebSocket — reconnect whenever mode changes ────────────────────────────
   useEffect(() => {
     let dead = false;
 
@@ -76,9 +85,7 @@ export default function App() {
       sock.onopen = () => {
         if (dead) { sock.close(); return; }
         setWsState('open');
-        console.log('[WS] open', mode);
 
-        // Frame pump — runs every FRAME_MS, grabs screenshot, sends to backend
         clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
           if (sock.readyState !== WebSocket.OPEN) return;
@@ -95,17 +102,13 @@ export default function App() {
         try {
           const data = JSON.parse(e.data);
           setHoldCount(data.hold_count || 0);
-
           if (data.prediction) {
             setLetter(data.prediction);
             setConf(data.confidence || 0);
           } else {
             setLetter(''); setConf(0);
           }
-
           if (data.mode === 'alphabet') setSentence(data.sentence || '');
-
-          // Canvas overlay
           if (canvasRef.current && webcamRef.current?.video) {
             drawBox(canvasRef.current, webcamRef.current.video,
                     data.boxes, data.prediction, data.confidence);
@@ -116,7 +119,7 @@ export default function App() {
       sock.onclose = () => {
         setWsState('closed');
         clearInterval(timerRef.current);
-        if (!dead) setTimeout(connect, 1500); // auto-reconnect
+        if (!dead) setTimeout(connect, 1500);
       };
 
       sock.onerror = () => sock.close();
@@ -132,8 +135,53 @@ export default function App() {
     };
   }, [mode]);
 
-  // ── UI actions ─────────────────────────────────────────────────────────────
-  const clearSentence = () => setSentence('');
+  // ── Translation handler ────────────────────────────────────────────────────
+  const handleTranslate = useCallback(async () => {
+  const text = sentence.trim();
+  if (!text) return;
+
+  setTranslating(true);
+  setTransError('');
+  setTranslated('');
+
+  try {
+    const res = await fetch(
+      `${MYMEMORY_URL}?q=${encodeURIComponent(text)}&langpair=en|${transLang}`
+    );
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const json = await res.json();
+
+    if (json.responseData?.translatedText) {
+      setTranslated(json.responseData.translatedText);
+    } else {
+      throw new Error("No translation returned");
+    }
+
+  } catch (err) {
+    setTransError(`Translation failed: ${err.message}`);
+  } finally {
+    setTranslating(false);
+  }
+}, [sentence, transLang]);
+
+  const speakTranslated = () => {
+    if (!translated.trim()) return;
+    const langMap = { fr: 'fr-FR', de: 'de-DE', es: 'es-ES' };
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(translated.trim());
+    u.lang = langMap[transLang] || transLang;
+    u.rate = 0.9;
+    window.speechSynthesis.speak(u);
+  };
+
+  const clearSentence = () => {
+    setSentence('');
+    setTranslated('');
+    setTransError('');
+  };
+
   const speakSentence = () => {
     if (!sentence.trim()) return;
     window.speechSynthesis.cancel();
@@ -141,11 +189,11 @@ export default function App() {
     u.rate = 0.9;
     window.speechSynthesis.speak(u);
   };
+
   const copyText = () => navigator.clipboard.writeText(sentence.trim());
 
   const holdPct = Math.round((holdCount / HOLD_MAX) * 100);
 
-  // ── Styles ─────────────────────────────────────────────────────────────────
   const COL = mode === 'alphabet' ? '#fb923c' : mode === 'phrase' ? '#2dd4bf' : '#f59e0b';
 
   const s = {
@@ -164,7 +212,7 @@ export default function App() {
       WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
     },
     statusRow: { display:'flex', gap:'10px', alignItems:'center' },
-    badge: (ok, label) => ({
+    badge: (ok) => ({
       padding:'4px 11px', borderRadius:'20px', fontSize:'11px', fontWeight:'700',
       background: ok ? 'rgba(34,197,94,.1)' : 'rgba(239,68,68,.1)',
       border:`1px solid ${ok ? 'rgba(34,197,94,.3)' : 'rgba(239,68,68,.3)'}`,
@@ -227,6 +275,12 @@ export default function App() {
       padding:'12px 14px', fontSize:'20px', fontWeight:'700',
       color:'#f1f5f9', letterSpacing:'0.04em', wordBreak:'break-all',
     },
+    transBox: {
+      minHeight:'56px', background:'rgba(0,0,0,.25)',
+      border:'1px solid rgba(255,255,255,.06)', borderRadius:'10px',
+      padding:'10px 14px', fontSize:'17px', fontWeight:'600',
+      color:'#cbd5e1', letterSpacing:'0.03em', wordBreak:'break-all',
+    },
     btnRow: { display:'flex', gap:'8px', marginTop:'10px' },
     btn: (r,g,b) => ({
       flex:1, padding:'9px 0', borderRadius:'9px',
@@ -244,9 +298,43 @@ export default function App() {
       border:     active ? `1px solid ${col}55` : '1px solid rgba(255,255,255,.06)',
       color:      active ? col : 'rgba(255,255,255,.3)',
     }),
+    // Translation-specific
+    transRow: { display:'flex', gap:'8px', alignItems:'center', marginBottom:'10px' },
+    langSelect: {
+      flex:1, padding:'8px 10px', borderRadius:'9px',
+      background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.12)',
+      color:'#e2e8f0', fontSize:'13px', fontWeight:'600', cursor:'pointer',
+      outline:'none', appearance:'none',
+      backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+      backgroundRepeat:'no-repeat', backgroundPosition:'right 10px center',
+      paddingRight:'28px',
+    },
+    transBtn: (loading) => ({
+      padding:'8px 16px', borderRadius:'9px', border:'1px solid rgba(139,92,246,.35)',
+      background: loading ? 'rgba(139,92,246,.08)' : 'rgba(139,92,246,.15)',
+      color: loading ? 'rgba(167,139,250,.5)' : '#a78bfa',
+      fontSize:'12px', fontWeight:'700', cursor: loading ? 'not-allowed' : 'pointer',
+      whiteSpace:'nowrap', transition:'all .2s',
+    }),
+    transLabel: {
+      fontSize:'10px', fontWeight:'800', textTransform:'uppercase',
+      letterSpacing:'1.2px', color:'rgba(167,139,250,.5)', marginBottom:'8px',
+    },
+    transErrorMsg: {
+      fontSize:'11px', color:'#f87171', marginTop:'6px', padding:'6px 10px',
+      background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)',
+      borderRadius:'8px',
+    },
+    speakTransBtn: {
+      marginTop:'8px', width:'100%', padding:'8px 0', borderRadius:'9px',
+      border:'1px solid rgba(167,139,250,.25)', cursor:'pointer',
+      fontSize:'12px', fontWeight:'700', background:'rgba(167,139,250,.08)',
+      color:'#a78bfa', transition:'all .2s',
+    },
   };
 
   const wsOk = wsState === 'open';
+  const selectedLang = TRANSLATE_LANGUAGES.find(l => l.code === transLang);
 
   return (
     <div style={s.root}>
@@ -273,10 +361,8 @@ export default function App() {
           />
           <canvas ref={canvasRef} style={s.cvs} />
 
-          {/* Big detected letter */}
           {letter && <div style={s.bigLetter}>{letter}</div>}
 
-          {/* Hold-to-commit bar (alphabet only) */}
           {mode === 'alphabet' && (
             <>
               {holdCount > 0 && (
@@ -360,6 +446,60 @@ export default function App() {
               <button style={s.btn(248,113,113)}  onClick={clearSentence}>🗑 Clear</button>
             </div>
           </div>
+
+          {/* ── Translation card (alphabet mode only) ── */}
+          {mode === 'alphabet' && (
+            <div style={s.card}>
+              <div style={s.cTitle}>Translate Spelled Text</div>
+
+              <div style={s.transRow}>
+                <select
+                  style={s.langSelect}
+                  value={transLang}
+                  onChange={e => { setTransLang(e.target.value); setTranslated(''); setTransError(''); }}
+                >
+                  {TRANSLATE_LANGUAGES.map(l => (
+                    <option key={l.code} value={l.code}>{l.flag} {l.label}</option>
+                  ))}
+                </select>
+                <button
+                  style={s.transBtn(translating)}
+                  onClick={handleTranslate}
+                  disabled={translating || !sentence.trim()}
+                >
+                  {translating ? '⏳ …' : '🌐 Translate'}
+                </button>
+              </div>
+
+              {(translated || transError || translating) && (
+                <>
+                  <div style={s.transLabel}>
+                    {selectedLang?.flag} {selectedLang?.label} translation
+                  </div>
+                  <div style={s.transBox}>
+                    {translating ? (
+                      <span style={{color:'rgba(255,255,255,.2)',fontSize:'13px',fontWeight:'400'}}>Translating…</span>
+                    ) : transError ? (
+                      <span style={{color:'#f87171',fontSize:'13px',fontWeight:'400'}}>{transError}</span>
+                    ) : (
+                      translated
+                    )}
+                  </div>
+                  {translated && !translating && (
+                    <button style={s.speakTransBtn} onClick={speakTranslated}>
+                      🔊 Speak in {selectedLang?.label}
+                    </button>
+                  )}
+                </>
+              )}
+
+              {!translated && !transError && !translating && (
+                <div style={{fontSize:'11px',color:'rgba(255,255,255,.2)',lineHeight:'1.6'}}>
+                  Spell a word or phrase above, then hit Translate to convert it to {selectedLang?.label}.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Hint */}
           <div style={{...s.card, fontSize:'12px', color:'rgba(255,255,255,.28)', lineHeight:'1.7'}}>
