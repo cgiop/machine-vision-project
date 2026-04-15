@@ -1,0 +1,21 @@
+FROM python:3.10-slim
+
+# Install system dependencies required for OpenCV and MediaPipe
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy a Linux-safe dependency set and install it inside the image
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the entire backend module including the models
+COPY backend/ ./backend/
+
+EXPOSE 8000
+
+# Run FastAPI using uvicorn
+CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
