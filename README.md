@@ -46,6 +46,16 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8000 --reload
 ```
 *Note: The first startup takes ~10 seconds while the CNN, LSTM, and MediaPipe models load into memory.*
 
+Optional environment variables:
+
+```powershell
+# Enables AI word completion for spelled text
+$env:GROQ_API_KEY="your_groq_api_key"
+
+# Optional Groq model override
+$env:GROQ_MODEL="llama-3.1-8b-instant"
+```
+
 ### 2. Frontend (React + Vite)
 
 The frontend is a lightweight React app built visually with Vite. It runs on `localhost:5173`.
@@ -74,3 +84,9 @@ npm run dev
 3. The Region Of Interest (hand crop) is passed to a Convolutional Neural Network (CNN) or LSTM model depending on the active mode in the UI.
 4. Bounding boxes, coordinates, and predicted letters/signs are sent back as JSON.
 5. The React frontend overlays this data dynamically on your live webcam feed.
+
+## Extra backend features
+
+- Sticky alphabet commits are reduced by locking a committed letter until the hand is released or changed.
+- Translation now goes through the backend via `POST /api/translate` instead of calling the public translation service directly from the browser.
+- Optional AI word completion is available through `POST /api/complete` when `GROQ_API_KEY` is set.

@@ -4,6 +4,59 @@ def distance(x, y):
     """Calculate Euclidean distance between two points"""
     return math.sqrt(((x[0] - y[0]) ** 2) + ((x[1] - y[1]) ** 2))
 
+
+def hand_scale(pts):
+    """Estimate hand size so thresholds can adapt to camera distance."""
+    palm_width = distance(pts[5], pts[17])
+    palm_height = distance(pts[0], pts[9])
+    return max(palm_width, palm_height, 1.0)
+
+
+def classify_c_or_o(pts):
+    """
+    Separate C from O using normalized thumb-to-finger gaps.
+    O should only win when the hand is tightly closed.
+    """
+    scale = hand_scale(pts)
+    thumb_index = distance(pts[4], pts[8]) / scale
+    thumb_middle = distance(pts[4], pts[12]) / scale
+    thumb_ring = distance(pts[4], pts[16]) / scale
+    avg_gap = (thumb_index + thumb_middle + thumb_ring) / 3.0
+
+    tight_o = thumb_index < 0.34 and thumb_middle < 0.48 and avg_gap < 0.47
+    open_c = thumb_index > 0.43 or thumb_middle > 0.62 or avg_gap > 0.56
+
+    if tight_o:
+        return "O"
+    if open_c:
+        return "C"
+
+    return "C" if thumb_middle >= 0.54 else "O"
+
+
+def looks_like_a(pts):
+    """
+    Catch compact fist-like shapes that can be mistaken for C after later tweaks.
+    """
+    scale = hand_scale(pts)
+    finger_tips = [8, 12, 16, 20]
+    finger_pips = [6, 10, 14, 18]
+
+    folded_count = sum(
+        1 for tip, pip in zip(finger_tips, finger_pips)
+        if pts[tip][1] > pts[pip][1] - 4
+    )
+    compact_count = sum(
+        1 for tip in finger_tips
+        if distance(pts[tip], pts[0]) / scale < 1.18
+    )
+    thumb_outside = (
+        pts[4][0] < min(pts[6][0], pts[10][0], pts[14][0], pts[18][0]) or
+        pts[4][0] > max(pts[6][0], pts[10][0], pts[14][0], pts[18][0])
+    )
+
+    return folded_count >= 3 and compact_count >= 3 and thumb_outside
+
 def evaluate_gesture(ch1, ch2, pts):
     """
     Evaluates the geometric constraints of a hand skeleton.
@@ -167,7 +220,9 @@ def evaluate_gesture(ch1, ch2, pts):
         elif pts[4][0] > pts[6][0] and pts[4][0] > pts[10][0] and pts[4][1] < pts[18][1] and pts[4][1] < pts[14][1]: ch1 = 'N'
 
     elif ch1 == 2:
-        ch1 = 'C' if distance(pts[12], pts[4]) > 42 else 'O'
+        ch1 = classify_c_or_o(pts)
+        if ch1 == 'C' and looks_like_a(pts):
+            ch1 = 'A'
 
     elif ch1 == 3:
         ch1 = 'G' if distance(pts[8], pts[12]) > 72 else 'H'
