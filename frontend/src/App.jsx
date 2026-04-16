@@ -50,6 +50,9 @@ export default function App() {
   const [groqEnabled, setGroqEnabled] = useState(false);
   const [twilioEnabled, setTwilioEnabled] = useState(false);
   const [gestureSmsStatus, setGestureSmsStatus] = useState('');
+  const [visionScore, setVisionScore] = useState(0);
+  const [visionFeedback, setVisionFeedback] = useState([]);
+  const [visionMetrics, setVisionMetrics] = useState({});
 
   const [transLang, setTransLang] = useState('fr');
   const [translated, setTranslated] = useState('');
@@ -144,6 +147,9 @@ export default function App() {
 
           if (data.mode === 'alphabet') {
             setSentence(data.sentence || '');
+            setVisionScore(data.vision_score || 0);
+            setVisionFeedback(Array.isArray(data.vision_feedback) ? data.vision_feedback : []);
+            setVisionMetrics(data.vision_metrics || {});
           }
 
           if (data.mode === 'gesture') {
@@ -177,6 +183,9 @@ export default function App() {
       setConf(0);
       setHoldCount(0);
       setGestureSmsStatus('');
+      setVisionScore(0);
+      setVisionFeedback([]);
+      setVisionMetrics({});
     };
   }, [mode]);
 
@@ -547,6 +556,26 @@ export default function App() {
       wordBreak: 'break-word',
     },
     miniNote: { fontSize: '11px', color: 'rgba(255,255,255,.2)', lineHeight: '1.6' },
+    metricGrid: { display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '8px', marginTop: '12px' },
+    metricCell: {
+      background: 'rgba(0,0,0,.22)',
+      border: '1px solid rgba(255,255,255,.06)',
+      borderRadius: '10px',
+      padding: '10px 12px',
+    },
+    metricLabel: {
+      fontSize: '10px',
+      fontWeight: '800',
+      textTransform: 'uppercase',
+      letterSpacing: '1px',
+      color: 'rgba(255,255,255,.26)',
+      marginBottom: '4px',
+    },
+    metricValue: {
+      fontSize: '17px',
+      fontWeight: '800',
+      color: '#f8fafc',
+    },
   };
 
   return (
@@ -607,6 +636,36 @@ export default function App() {
               <div style={s.confBar}><div style={s.confFill} /></div>
               <div style={{ marginTop: '5px', fontSize: '11px', color: 'rgba(255,255,255,.22)' }}>
                 Confidence: {Math.round(conf * 100)}%
+              </div>
+            </div>
+          )}
+
+          {mode === 'alphabet' && (
+            <div style={s.card}>
+              <div style={s.cTitle}>Vision Score</div>
+              <div style={{ fontSize: '34px', fontWeight: '900', color: '#fdba74', lineHeight: 1 }}>
+                {Math.round(visionScore * 100)}%
+              </div>
+              <div style={{ marginTop: '8px', fontSize: '12px', color: '#cbd5e1', lineHeight: '1.5' }}>
+                {(visionFeedback[0] || 'Frame quality looks good.')}
+              </div>
+              <div style={s.metricGrid}>
+                <div style={s.metricCell}>
+                  <div style={s.metricLabel}>Stability</div>
+                  <div style={s.metricValue}>{Math.round((visionMetrics.stability || 0) * 100)}%</div>
+                </div>
+                <div style={s.metricCell}>
+                  <div style={s.metricLabel}>Centering</div>
+                  <div style={s.metricValue}>{Math.round((visionMetrics.centering || 0) * 100)}%</div>
+                </div>
+                <div style={s.metricCell}>
+                  <div style={s.metricLabel}>Sharpness</div>
+                  <div style={s.metricValue}>{Math.round((visionMetrics.sharpness || 0) * 100)}%</div>
+                </div>
+                <div style={s.metricCell}>
+                  <div style={s.metricLabel}>Brightness</div>
+                  <div style={s.metricValue}>{Math.round((visionMetrics.brightness || 0) * 100)}%</div>
+                </div>
               </div>
             </div>
           )}

@@ -150,11 +150,96 @@ def _lm_px(bgr, lm_set):
     ]
 
 
+def _clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def _normalized_distance(point_a, point_b, width, height):
+    dx = (point_a[0] - point_b[0]) / max(width, 1)
+    dy = (point_a[1] - point_b[1]) / max(height, 1)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _vision_metrics(frame, bbox, stability):
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    roi = frame[y1:y2, x1:x2]
+    if roi.size == 0:
+        return {
+            "vision_score": 0.0,
+            "vision_feedback": ["Hand crop is empty. Reposition your hand."],
+            "vision_metrics": {
+                "brightness": 0.0,
+                "sharpness": 0.0,
+                "coverage": 0.0,
+                "centering": 0.0,
+                "stability": round(stability, 3),
+            },
+        }
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    brightness = float(np.mean(gray) / 255.0)
+    sharpness = _clamp(float(cv2.Laplacian(gray, cv2.CV_64F).var() / 180.0), 0.0, 1.0)
+    coverage = _clamp(((x2 - x1) * (y2 - y1)) / max(width * height, 1), 0.0, 1.0)
+    bbox_center = ((x1 + x2) / 2, (y1 + y2) / 2)
+    frame_center = (width / 2, height / 2)
+    center_distance = _normalized_distance(bbox_center, frame_center, width, height)
+    centering = round(_clamp(1.0 - (center_distance / 0.45), 0.0, 1.0), 3)
+
+    vision_score = round(
+        (sharpness * 0.32)
+        + (centering * 0.22)
+        + (stability * 0.24)
+        + (_clamp(1.0 - abs(brightness - 0.55) / 0.45, 0.0, 1.0) * 0.12)
+        + (_clamp(min(coverage / 0.18, 1.0), 0.0, 1.0) * 0.10),
+        3,
+    )
+
+    feedback = []
+    if brightness < 0.22:
+        feedback.append("Increase lighting on the hand.")
+    elif brightness > 0.88:
+        feedback.append("Reduce glare or move away from bright light.")
+
+    if sharpness < 0.28:
+        feedback.append("Hold still for a sharper frame.")
+
+    if coverage < 0.05:
+        feedback.append("Move your hand closer to the camera.")
+    elif coverage > 0.38:
+        feedback.append("Move your hand slightly back to fit the frame.")
+
+    if centering < 0.55:
+        feedback.append("Center your hand in the camera view.")
+
+    if stability < 0.55:
+        feedback.append("Keep the hand steadier before committing.")
+
+    if not feedback:
+        feedback.append("Frame quality looks good.")
+
+    return {
+        "vision_score": vision_score,
+        "vision_feedback": feedback,
+        "vision_metrics": {
+            "brightness": round(brightness, 3),
+            "sharpness": round(sharpness, 3),
+            "coverage": round(coverage, 3),
+            "centering": centering,
+            "stability": round(stability, 3),
+        },
+    }
+
+
 def _blank_result(mode, sentence="", seq_progress=0, hold_count=0):
     return {
         "mode": mode,
         "prediction": "",
         "confidence": 0.0,
+        "stability": 0.0,
+        "vision_score": 0.0,
+        "vision_feedback": [],
+        "vision_metrics": {},
         "boxes": [],
         "sentence": sentence,
         "hold_count": hold_count,
@@ -191,11 +276,10 @@ class AlphabetSession:
         self.sentence = ""
         self.prev_char = ""
         self.hold_count = 0
-        self.hist = deque(maxlen=8)
+        self.hist = deque(maxlen=12)
         self.locked_prediction = ""
-        self.release_streak = 0
-        self.raw_label = ""
-        self.raw_streak = 0
+        self.motion_hist = deque(maxlen=8)
+        self.last_bbox = None
 
     def _skeleton(self, pts, bbox):
         canvas = np.ones((self.CANVAS, self.CANVAS, 3), np.uint8) * 255
@@ -224,36 +308,24 @@ class AlphabetSession:
             cv2.circle(canvas, (points[idx][0] + offset_x, points[idx][1] + offset_y), 2, (0, 0, 255), 1)
         return canvas
 
-    def _reset_lock_if_released(self):
-        self.release_streak += 1
-        if self.release_streak >= 2:
-            self.locked_prediction = ""
-            self.raw_label = ""
-            self.raw_streak = 0
+    def _measure_stability(self, bbox):
+        x1, y1, x2, y2 = bbox
+        center = ((x1 + x2) / 2, (y1 + y2) / 2)
+        area = max((x2 - x1) * (y2 - y1), 1)
 
-    def _remember_raw(self, value):
-        if value and value == self.raw_label:
-            self.raw_streak += 1
-        else:
-            self.raw_label = value
-            self.raw_streak = 1 if value else 0
+        if self.last_bbox is None:
+            self.last_bbox = (center, area)
+            self.motion_hist.append(1.0)
+            return 1.0
 
-    def _stable_prediction(self):
-        if not self.hist:
-            return "", 0.0
+        (last_center_x, last_center_y), last_area = self.last_bbox
+        shift = abs(center[0] - last_center_x) + abs(center[1] - last_center_y)
+        area_delta = abs(area - last_area) / max(last_area, 1)
+        motion_score = max(0.0, 1.0 - min(1.0, (shift / 42.0) + (area_delta * 0.65)))
 
-        recent = list(self.hist)
-        tail = recent[-3:]
-        if len(tail) == 3 and len(set(tail)) == 1 and isinstance(tail[-1], str):
-            candidate = tail[-1]
-            conf = max(recent.count(candidate) / len(recent), min(self.raw_streak / 3.0, 1.0))
-            return candidate, round(conf, 3)
-
-        best, count = Counter(recent).most_common(1)[0]
-        ratio = count / len(recent)
-        if len(recent) >= 5 and ratio >= 0.625 and isinstance(best, str):
-            return best, round(ratio, 3)
-        return "", 0.0
+        self.last_bbox = (center, area)
+        self.motion_hist.append(motion_score)
+        return round(sum(self.motion_hist) / len(self.motion_hist), 3)
 
     def process(self, bgr):
         frame = bgr
@@ -273,7 +345,9 @@ class AlphabetSession:
             self.hist.clear()
             self.hold_count = 0
             self.prev_char = ""
-            self._reset_lock_if_released()
+            self.motion_hist.clear()
+            self.last_bbox = None
+            self.locked_prediction = ""
             return out
 
         hand = hands[0]
@@ -283,6 +357,9 @@ class AlphabetSession:
         x1 = max(0, x - self.OFFSET)
         x2 = min(frame_w, x + box_w + self.OFFSET)
         out["boxes"] = [[x1, y1, x2, y2]]
+        stability = self._measure_stability((x1, y1, x2, y2))
+        out["stability"] = stability
+        out.update(_vision_metrics(frame, (x1, y1, x2, y2), stability))
 
         roi = frame[y1:y2, x1:x2]
         if roi.size == 0:
@@ -297,29 +374,25 @@ class AlphabetSession:
         bbox = roi_hands[0]["bbox"]
         canvas = self._skeleton(pts, bbox)
 
-        probs = np.array(alphabet_cnn.predict(canvas.reshape(1, self.CANVAS, self.CANVAS, 3), verbose=0)[0], dtype="float32")
-        order = np.argsort(probs)[::-1]
-        ch1 = int(order[0])
-        ch2 = int(order[1])
-        top1 = float(probs[ch1])
-        top2 = float(probs[ch2])
-        margin = top1 - top2
+        probs = np.array(
+            alphabet_cnn.predict(canvas.reshape(1, self.CANVAS, self.CANVAS, 3), verbose=0)[0],
+            dtype="float32",
+        )
+        ch1 = int(np.argmax(probs))
+        probs[ch1] = 0
+        ch2 = int(np.argmax(probs))
 
         result = evaluate_gesture(ch1, ch2, pts)
-        if isinstance(result, str) and result in AMBIGUOUS_LETTERS:
-            if result in {"C", "O"}:
-                if top1 < 0.50 and margin < 0.08:
-                    result = ""
-            elif top1 < 0.55 and margin < 0.12:
-                result = ""
+        self.hist.append(result)
 
-        self._remember_raw(result)
-        if result:
-            self.hist.append(result)
-        else:
-            self.hist.clear()
-
-        predicted, conf = self._stable_prediction()
+        predicted = ""
+        conf = 0.0
+        if len(self.hist) >= 6:
+            best, count = Counter(self.hist).most_common(1)[0]
+            ratio = count / len(self.hist)
+            if ratio >= 0.5 and isinstance(best, str):
+                predicted = best
+                conf = round(ratio, 3)
 
         out["prediction"] = predicted
         out["confidence"] = conf
@@ -327,14 +400,10 @@ class AlphabetSession:
         if not predicted:
             self.hold_count = 0
             self.prev_char = ""
-            self._reset_lock_if_released()
+            self.locked_prediction = ""
             out["hold_count"] = 0
             out["seq_progress"] = 0
             return out
-
-        self.release_streak = 0
-        if self.locked_prediction and predicted != self.locked_prediction:
-            self.locked_prediction = ""
 
         if predicted == self.locked_prediction:
             out["sentence"] = self.sentence
@@ -363,7 +432,7 @@ class AlphabetSession:
                     self.locked_prediction = predicted
             else:
                 self.prev_char = predicted
-                self.hold_count = 1
+                self.hold_count = 0
 
         out["sentence"] = self.sentence
         out["hold_count"] = self.hold_count
@@ -376,9 +445,8 @@ class AlphabetSession:
         self.hold_count = 0
         self.hist.clear()
         self.locked_prediction = ""
-        self.release_streak = 0
-        self.raw_label = ""
-        self.raw_streak = 0
+        self.motion_hist.clear()
+        self.last_bbox = None
 
     def set_sentence(self, value):
         self.sentence = value
@@ -386,9 +454,8 @@ class AlphabetSession:
         self.hold_count = 0
         self.hist.clear()
         self.locked_prediction = ""
-        self.release_streak = 0
-        self.raw_label = ""
-        self.raw_streak = 0
+        self.motion_hist.clear()
+        self.last_bbox = None
 
     def close(self):
         return None
@@ -464,11 +531,22 @@ class GestureSession:
         self.sms_cooldown_seconds = 20.0
         self.last_sms_status = ""
 
+    def _refresh_sms_status(self):
+        if self.last_sms_at <= 0:
+            return
+
+        remaining = int(self.sms_cooldown_seconds - (time.monotonic() - self.last_sms_at))
+        if remaining > 0:
+            self.last_sms_status = f"Cooldown active ({remaining}s)"
+        elif self.last_sms_status.startswith("Cooldown active"):
+            self.last_sms_status = "SMS ready"
+
     def process(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
         res = self.mp.process(rgb)
         rgb.flags.writeable = True
+        self._refresh_sms_status()
         out = {
             "mode": "gesture",
             "prediction": "",
@@ -484,6 +562,7 @@ class GestureSession:
         if not res.multi_hand_landmarks:
             self.hist.clear()
             self.open_streak = 0
+            out["sms_status"] = self.last_sms_status
             return out
 
         hand = res.multi_hand_landmarks[0]
@@ -517,8 +596,8 @@ class GestureSession:
                     self.last_sms_status = status
                     if ok:
                         self.last_sms_at = now
-                elif self.last_sms_status:
-                    self.last_sms_status = f"Cooldown active ({int(self.sms_cooldown_seconds - (now - self.last_sms_at))}s)"
+                else:
+                    self._refresh_sms_status()
         else:
             self.open_streak = 0
 
