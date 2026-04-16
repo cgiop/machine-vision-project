@@ -258,7 +258,7 @@ def _send_open_hand_sms():
         message = twilio_client.messages.create(
             from_=TWILIO_FROM_NUMBER,
             to=TWILIO_TO_NUMBER,
-            body="Emergency Detected",
+            body="Emergency Detected\n Patient Name: Sohom Paik\n Address: L-1029, VIT Vellore",
         )
         sid = getattr(message, "sid", "")
         return True, f"SMS sent{f' ({sid})' if sid else ''}"
