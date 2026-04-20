@@ -145,11 +145,12 @@ export default function App() {
             setConf(0);
           }
 
+          setVisionScore(data.vision_score || 0);
+          setVisionFeedback(Array.isArray(data.vision_feedback) ? data.vision_feedback : []);
+          setVisionMetrics(data.vision_metrics || {});
+
           if (data.mode === 'alphabet') {
             setSentence(data.sentence || '');
-            setVisionScore(data.vision_score || 0);
-            setVisionFeedback(Array.isArray(data.vision_feedback) ? data.vision_feedback : []);
-            setVisionMetrics(data.vision_metrics || {});
           }
 
           if (data.mode === 'gesture') {
@@ -625,6 +626,34 @@ export default function App() {
             </div>
           </div>
 
+          <div style={s.card}>
+            <div style={s.cTitle}>Vision Score</div>
+            <div style={{ fontSize: '34px', fontWeight: '900', color: '#fdba74', lineHeight: 1 }}>
+              {Math.round(visionScore * 100)}%
+            </div>
+            <div style={{ marginTop: '8px', fontSize: '12px', color: '#cbd5e1', lineHeight: '1.5' }}>
+              {(visionFeedback[0] || 'Frame quality looks good.')}
+            </div>
+            <div style={s.metricGrid}>
+              <div style={s.metricCell}>
+                <div style={s.metricLabel}>Stability</div>
+                <div style={s.metricValue}>{Math.round((visionMetrics.stability || 0) * 100)}%</div>
+              </div>
+              <div style={s.metricCell}>
+                <div style={s.metricLabel}>Centering</div>
+                <div style={s.metricValue}>{Math.round((visionMetrics.centering || 0) * 100)}%</div>
+              </div>
+              <div style={s.metricCell}>
+                <div style={s.metricLabel}>Sharpness</div>
+                <div style={s.metricValue}>{Math.round((visionMetrics.sharpness || 0) * 100)}%</div>
+              </div>
+              <div style={s.metricCell}>
+                <div style={s.metricLabel}>Brightness</div>
+                <div style={s.metricValue}>{Math.round((visionMetrics.brightness || 0) * 100)}%</div>
+              </div>
+            </div>
+          </div>
+
           {mode === 'alphabet' && (
             <div style={s.card}>
               <div style={s.cTitle}>ASL Alphabet - hold steady to commit</div>
@@ -636,36 +665,6 @@ export default function App() {
               <div style={s.confBar}><div style={s.confFill} /></div>
               <div style={{ marginTop: '5px', fontSize: '11px', color: 'rgba(255,255,255,.22)' }}>
                 Confidence: {Math.round(conf * 100)}%
-              </div>
-            </div>
-          )}
-
-          {mode === 'alphabet' && (
-            <div style={s.card}>
-              <div style={s.cTitle}>Vision Score</div>
-              <div style={{ fontSize: '34px', fontWeight: '900', color: '#fdba74', lineHeight: 1 }}>
-                {Math.round(visionScore * 100)}%
-              </div>
-              <div style={{ marginTop: '8px', fontSize: '12px', color: '#cbd5e1', lineHeight: '1.5' }}>
-                {(visionFeedback[0] || 'Frame quality looks good.')}
-              </div>
-              <div style={s.metricGrid}>
-                <div style={s.metricCell}>
-                  <div style={s.metricLabel}>Stability</div>
-                  <div style={s.metricValue}>{Math.round((visionMetrics.stability || 0) * 100)}%</div>
-                </div>
-                <div style={s.metricCell}>
-                  <div style={s.metricLabel}>Centering</div>
-                  <div style={s.metricValue}>{Math.round((visionMetrics.centering || 0) * 100)}%</div>
-                </div>
-                <div style={s.metricCell}>
-                  <div style={s.metricLabel}>Sharpness</div>
-                  <div style={s.metricValue}>{Math.round((visionMetrics.sharpness || 0) * 100)}%</div>
-                </div>
-                <div style={s.metricCell}>
-                  <div style={s.metricLabel}>Brightness</div>
-                  <div style={s.metricValue}>{Math.round((visionMetrics.brightness || 0) * 100)}%</div>
-                </div>
               </div>
             </div>
           )}

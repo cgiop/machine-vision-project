@@ -160,60 +160,76 @@ def _normalized_distance(point_a, point_b, width, height):
     return (dx * dx + dy * dy) ** 0.5
 
 
-def _vision_metrics(frame, bbox, stability):
-    height, width = frame.shape[:2]
-    x1, y1, x2, y2 = bbox
-    roi = frame[y1:y2, x1:x2]
-    if roi.size == 0:
-        return {
-            "vision_score": 0.0,
-            "vision_feedback": ["Hand crop is empty. Reposition your hand."],
-            "vision_metrics": {
-                "brightness": 0.0,
-                "sharpness": 0.0,
-                "coverage": 0.0,
-                "centering": 0.0,
-                "stability": round(stability, 3),
-            },
-        }
+def _band_score(value, low, ideal_low, ideal_high, high):
+    if value <= low or value >= high:
+        return 0.0
+    if ideal_low <= value <= ideal_high:
+        return 1.0
+    if value < ideal_low:
+        return _clamp((value - low) / max(ideal_low - low, 1e-6), 0.0, 1.0)
+    return _clamp((high - value) / max(high - ideal_high, 1e-6), 0.0, 1.0)
 
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+def _scene_centering(gray):
+    height, width = gray.shape[:2]
+    if height == 0 or width == 0:
+        return 0.0
+
+    # Use scene detail + intensity deviation to estimate where the visual subject mass sits.
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad = cv2.magnitude(gx, gy)
+    deviation = cv2.absdiff(gray, np.full_like(gray, int(np.mean(gray))))
+    weights = cv2.GaussianBlur(grad + deviation.astype(np.float32), (0, 0), 3)
+    weight_sum = float(np.sum(weights))
+
+    if weight_sum <= 1e-6:
+        return 1.0
+
+    ys, xs = np.indices((height, width), dtype=np.float32)
+    center_x = float(np.sum(xs * weights) / weight_sum)
+    center_y = float(np.sum(ys * weights) / weight_sum)
+    distance = _normalized_distance((center_x, center_y), (width / 2, height / 2), width, height)
+    return round(_clamp(1.0 - (distance / 0.55), 0.0, 1.0), 3)
+
+
+def _environment_metrics(frame, scene_stability):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     brightness = float(np.mean(gray) / 255.0)
-    sharpness = _clamp(float(cv2.Laplacian(gray, cv2.CV_64F).var() / 180.0), 0.0, 1.0)
-    coverage = _clamp(((x2 - x1) * (y2 - y1)) / max(width * height, 1), 0.0, 1.0)
-    bbox_center = ((x1 + x2) / 2, (y1 + y2) / 2)
-    frame_center = (width / 2, height / 2)
-    center_distance = _normalized_distance(bbox_center, frame_center, width, height)
-    centering = round(_clamp(1.0 - (center_distance / 0.45), 0.0, 1.0), 3)
+    contrast = float(np.std(gray) / 64.0)
+    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    sharpness = _clamp(np.log1p(lap_var) / np.log1p(450.0), 0.0, 1.0)
+    centering = _scene_centering(gray)
+    exposure_score = _band_score(brightness, 0.12, 0.30, 0.72, 0.92)
+    contrast_score = _band_score(contrast, 0.10, 0.22, 0.75, 1.25)
+    scene_calm_score = _band_score(scene_stability, 0.0, 0.45, 0.95, 1.0)
 
     vision_score = round(
-        (sharpness * 0.32)
-        + (centering * 0.22)
-        + (stability * 0.24)
-        + (_clamp(1.0 - abs(brightness - 0.55) / 0.45, 0.0, 1.0) * 0.12)
-        + (_clamp(min(coverage / 0.18, 1.0), 0.0, 1.0) * 0.10),
+        (sharpness * 0.28)
+        + (scene_calm_score * 0.28)
+        + (centering * 0.18)
+        + (exposure_score * 0.22)
+        + (contrast_score * 0.04),
         3,
     )
 
     feedback = []
-    if brightness < 0.22:
+    if exposure_score < 0.45 and brightness < 0.28:
         feedback.append("Increase lighting on the hand.")
-    elif brightness > 0.88:
+    elif exposure_score < 0.45 and brightness > 0.82:
         feedback.append("Reduce glare or move away from bright light.")
 
     if sharpness < 0.28:
-        feedback.append("Hold still for a sharper frame.")
+        feedback.append("Improve camera focus or reduce blur in the scene.")
 
-    if coverage < 0.05:
-        feedback.append("Move your hand closer to the camera.")
-    elif coverage > 0.38:
-        feedback.append("Move your hand slightly back to fit the frame.")
+    if scene_calm_score < 0.45:
+        feedback.append("Keep the camera steadier for a cleaner feed.")
 
-    if centering < 0.55:
-        feedback.append("Center your hand in the camera view.")
+    if centering < 0.45:
+        feedback.append("Center the main subject in the camera view.")
 
-    if stability < 0.55:
-        feedback.append("Keep the hand steadier before committing.")
+    if contrast_score < 0.30 and sharpness >= 0.28:
+        feedback.append("Use a cleaner background for clearer separation.")
 
     if not feedback:
         feedback.append("Frame quality looks good.")
@@ -224,11 +240,70 @@ def _vision_metrics(frame, bbox, stability):
         "vision_metrics": {
             "brightness": round(brightness, 3),
             "sharpness": round(sharpness, 3),
-            "coverage": round(coverage, 3),
+            "contrast": round(_clamp(contrast, 0.0, 1.0), 3),
+            "coverage": 0.0,
             "centering": centering,
-            "stability": round(stability, 3),
+            "stability": round(scene_stability, 3),
         },
     }
+
+
+def _merge_boxes(boxes):
+    if not boxes:
+        return None
+    return [
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    ]
+
+
+def _update_motion_state(state, bbox):
+    x1, y1, x2, y2 = bbox
+    center = ((x1 + x2) / 2, (y1 + y2) / 2)
+    area = max((x2 - x1) * (y2 - y1), 1)
+
+    if state["last_bbox"] is None:
+        state["last_bbox"] = (center, area)
+        state["motion_hist"].append(1.0)
+        return 1.0
+
+    (last_center_x, last_center_y), last_area = state["last_bbox"]
+    shift = abs(center[0] - last_center_x) + abs(center[1] - last_center_y)
+    area_delta = abs(area - last_area) / max(last_area, 1)
+    motion_score = max(0.0, 1.0 - min(1.0, (shift / 42.0) + (area_delta * 0.65)))
+
+    state["last_bbox"] = (center, area)
+    state["motion_hist"].append(motion_score)
+    return round(sum(state["motion_hist"]) / len(state["motion_hist"]), 3)
+
+
+def _reset_motion_state(state):
+    state["motion_hist"].clear()
+    state["last_bbox"] = None
+
+
+def _update_scene_state(state, frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(gray, (96, 72), interpolation=cv2.INTER_AREA)
+
+    if state.get("last_frame") is None:
+        state["last_frame"] = small
+        state["motion_hist"].append(0.95)
+        return 0.95
+
+    diff = cv2.absdiff(small, state["last_frame"])
+    mean_diff = float(np.mean(diff)) / 255.0
+    motion_score = _clamp(1.0 - (mean_diff / 0.14), 0.0, 1.0)
+    state["last_frame"] = small
+    state["motion_hist"].append(motion_score)
+    return round(sum(state["motion_hist"]) / len(state["motion_hist"]), 3)
+
+
+def _reset_scene_state(state):
+    state["motion_hist"].clear()
+    state["last_frame"] = None
 
 
 def _blank_result(mode, sentence="", seq_progress=0, hold_count=0):
@@ -280,6 +355,7 @@ class AlphabetSession:
         self.locked_prediction = ""
         self.motion_hist = deque(maxlen=8)
         self.last_bbox = None
+        self.scene_state = {"motion_hist": deque(maxlen=12), "last_frame": None}
 
     def _skeleton(self, pts, bbox):
         canvas = np.ones((self.CANVAS, self.CANVAS, 3), np.uint8) * 255
@@ -338,6 +414,9 @@ class AlphabetSession:
             seq_progress=min(self.hold_count, hold_frames),
             hold_count=self.hold_count,
         )
+        scene_stability = _update_scene_state(self.scene_state, frame)
+        out["stability"] = scene_stability
+        out.update(_environment_metrics(frame, scene_stability))
 
         hands_result = self.hd.findHands(frame, draw=False, flipType=True)
         hands = hands_result[0] if isinstance(hands_result, (tuple, list)) and not isinstance(hands_result[0], dict) else hands_result
@@ -357,9 +436,6 @@ class AlphabetSession:
         x1 = max(0, x - self.OFFSET)
         x2 = min(frame_w, x + box_w + self.OFFSET)
         out["boxes"] = [[x1, y1, x2, y2]]
-        stability = self._measure_stability((x1, y1, x2, y2))
-        out["stability"] = stability
-        out.update(_vision_metrics(frame, (x1, y1, x2, y2), stability))
 
         roi = frame[y1:y2, x1:x2]
         if roi.size == 0:
@@ -447,6 +523,7 @@ class AlphabetSession:
         self.locked_prediction = ""
         self.motion_hist.clear()
         self.last_bbox = None
+        _reset_scene_state(self.scene_state)
 
     def set_sentence(self, value):
         self.sentence = value
@@ -456,6 +533,7 @@ class AlphabetSession:
         self.locked_prediction = ""
         self.motion_hist.clear()
         self.last_bbox = None
+        _reset_scene_state(self.scene_state)
 
     def close(self):
         return None
@@ -469,6 +547,8 @@ class PhraseSession:
         )
         self.seq = deque(maxlen=SEQ_LEN)
         self.votes = deque(maxlen=5)
+        self.motion_state = {"motion_hist": deque(maxlen=8), "last_bbox": None}
+        self.scene_state = {"motion_hist": deque(maxlen=12), "last_frame": None}
 
     def process(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -491,15 +571,15 @@ class PhraseSession:
                 ])
 
         self.seq.append(_holistic_kp(res))
-        out = {
-            "mode": "phrase",
-            "prediction": "",
-            "confidence": 0.0,
-            "boxes": boxes,
-            "seq_progress": len(self.seq),
-            "sentence": "",
-            "hold_count": 0,
-        }
+        out = _blank_result(mode="phrase", sentence="", seq_progress=len(self.seq), hold_count=0)
+        out["boxes"] = boxes
+        scene_stability = _update_scene_state(self.scene_state, bgr)
+        out["stability"] = scene_stability
+        out.update(_environment_metrics(bgr, scene_stability))
+
+        merged_box = _merge_boxes(boxes)
+        if not merged_box:
+            _reset_motion_state(self.motion_state)
 
         if len(self.seq) == SEQ_LEN:
             probs = phrase_model.predict(np.expand_dims(np.array(self.seq), 0), verbose=0)[0]
@@ -530,6 +610,8 @@ class GestureSession:
         self.last_sms_at = 0.0
         self.sms_cooldown_seconds = 20.0
         self.last_sms_status = ""
+        self.motion_state = {"motion_hist": deque(maxlen=8), "last_bbox": None}
+        self.scene_state = {"motion_hist": deque(maxlen=12), "last_frame": None}
 
     def _refresh_sms_status(self):
         if self.last_sms_at <= 0:
@@ -547,6 +629,7 @@ class GestureSession:
         res = self.mp.process(rgb)
         rgb.flags.writeable = True
         self._refresh_sms_status()
+        scene_stability = _update_scene_state(self.scene_state, bgr)
         out = {
             "mode": "gesture",
             "prediction": "",
@@ -557,11 +640,14 @@ class GestureSession:
             "hold_count": 0,
             "sms_ready": _twilio_ready(),
             "sms_status": self.last_sms_status,
+            "stability": scene_stability,
         }
+        out.update(_environment_metrics(bgr, scene_stability))
 
         if not res.multi_hand_landmarks:
             self.hist.clear()
             self.open_streak = 0
+            _reset_motion_state(self.motion_state)
             out["sms_status"] = self.last_sms_status
             return out
 
